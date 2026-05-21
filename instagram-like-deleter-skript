@@ -1,0 +1,163 @@
+;(async function () {
+  // Angepasste Limits und Zeiten zur Vermeidung von Instagram-Sperren (Error 500)
+  const UNLIKE_BATCH_SIZE = 25
+  const DELAY_BETWEEN_ACTIONS_MS = 2000
+  const DELAY_BETWEEN_CHECKBOX_CLICKS_MS = 250
+  const DELAY_AFTER_SELECT_CLICK_MS = 2000
+  const DELAY_AFTER_ITEMS_VISIBLE_MS = 2000
+  const DELAY_AFTER_UNLIKE_BATCH_MS = 30000 // 30 Sekunden Pause nach jedem Durchgang
+  const MAX_RETRIES = 60
+
+  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+  const waitForElement = async (selector, timeout = 30000) => {
+    const startTime = Date.now()
+    while (Date.now() - startTime < timeout) {
+      const element = document.querySelector(selector)
+      if (element) return element
+      await delay(100)
+    }
+    throw new Error(`Element with selector "${selector}" not found within ${timeout}ms`)
+  }
+
+  const clickElement = async (element) => {
+    if (!element) throw new Error('Element not found')
+    element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    await delay(300)
+    element.click()
+  }
+
+  const findSelectButton = () => {
+    // Sichere Text-Suche (ignoriert Groß-/Kleinschreibung)
+    const selectSpans = [...document.querySelectorAll('span')]
+      .filter(el => {
+        const text = el.textContent.trim().toLowerCase()
+        return text === 'select' || text === 'auswählen'
+      })
+    
+    if (selectSpans.length > 0) {
+      for (const span of selectSpans) {
+        let parent = span.parentElement
+        for (let i = 0; i < 5; i++) {
+          if (parent && (parent.role === 'button' || parent.onclick || parent.getAttribute('tabindex'))) {
+            return parent
+          }
+          parent = parent?.parentElement
+        }
+        return span // Wenn kein Button-Parent gefunden wird, klicke das Span selbst
+      }
+    }
+
+    // Alternative: Suche nach dem blauen Button
+    const blueButtons = [...document.querySelectorAll('[role="button"]')]
+      .filter(btn => {
+        const span = btn.querySelector('span')
+        return span && window.getComputedStyle(span).color === 'rgb(0, 149, 246)'
+      })
+    
+    if (blueButtons.length > 0) return blueButtons[0]
+
+    // Der unsichere Fallback (return buttons[1]) bleibt entfernt!
+    return null
+  }
+
+  const waitForSelectButton = async () => {
+    for (let i = 0; i < MAX_RETRIES; i++) {
+      const selectButton = findSelectButton()
+      if (selectButton) return selectButton
+      await delay(1000)
+    }
+    throw new Error('Select button not found after maximum retries')
+  }
+
+  const unlikeSelectedItems = async () => {
+    try {
+      const unlikeButton = [...document.querySelectorAll('span')]
+        .find(el => {
+            const text = el.textContent.trim().toLowerCase()
+            return text === 'unlike' || text === 'gefällt mir nicht mehr' || text === 'löschen'
+        })
+      
+      if (!unlikeButton) throw new Error('Unlike button not found')
+      
+      await clickElement(unlikeButton)
+      await delay(DELAY_BETWEEN_ACTIONS_MS)
+      
+      // Sucht den roten Bestätigungsbutton im Popup
+      const confirmButton = await waitForElement('button[tabindex="0"]')
+      await clickElement(confirmButton)
+      
+      console.log(`⏳ Waiting ${DELAY_AFTER_UNLIKE_BATCH_MS / 1000} seconds for Instagram to process...`)
+      await delay(DELAY_AFTER_UNLIKE_BATCH_MS)
+    } catch (error) {
+      console.error('Error during like removal:', error.message)
+    }
+  }
+
+  const scrollAndWaitForMoreItems = async (previousCount) => {
+    window.scrollTo(0, document.body.scrollHeight)
+    for (let i = 0; i < 10; i++) {
+      await delay(1000)
+      const currentCount = document.querySelectorAll('[data-testid="bulk_action_checkbox"]').length
+      if (currentCount > previousCount) return true
+    }
+    return false
+  }
+
+  const removeLikes = async () => {
+    try {
+      while (true) {
+        const selectButton = findSelectButton()
+        if (!selectButton) {
+          console.log('🔍 Select button not found, scrolling and trying again...')
+          window.scrollTo(0, 0) // Kurz nach oben scrollen hilft manchmal, den Header neu zu laden
+          await delay(2000)
+          continue
+        }
+
+        console.log('✅ Found Select button:', selectButton.textContent.trim())
+        await clickElement(selectButton)
+        await delay(DELAY_AFTER_SELECT_CLICK_MS)
+
+        let checkboxContainers = document.querySelectorAll('[data-testid="bulk_action_checkbox"]')
+        
+        if (checkboxContainers.length === 0) {
+          const gotMore = await scrollAndWaitForMoreItems(0)
+          if (!gotMore) {
+            console.log('🚫 No more items to unlike.')
+            break
+          }
+          continue
+        }
+
+        await delay(DELAY_AFTER_ITEMS_VISIBLE_MS)
+
+        console.log(`📋 Selecting ${Math.min(UNLIKE_BATCH_SIZE, checkboxContainers.length)} items...`)
+        
+        for (let i = 0; i < Math.min(UNLIKE_BATCH_SIZE, checkboxContainers.length); i++) {
+          const clickableButton = checkboxContainers[i].querySelector('[role="button"]')
+          if (clickableButton) {
+            await clickElement(clickableButton)
+            await delay(DELAY_BETWEEN_CHECKBOX_CLICKS_MS)
+          }
+        }
+
+        await delay(DELAY_BETWEEN_ACTIONS_MS)
+        await unlikeSelectedItems()
+        
+        await delay(DELAY_BETWEEN_ACTIONS_MS)
+      }
+    } catch (error) {
+      console.error('Error in removeLikes:', error.message)
+    }
+  }
+
+  // Start script
+  try {
+    console.log('🚀 Starting Instagram unlike script...')
+    await removeLikes()
+    console.log('✅ All likes removed or none left.')
+  } catch (error) {
+    console.error('Fatal error:', error.message)
+  }
+})()
